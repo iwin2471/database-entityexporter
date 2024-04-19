@@ -31,26 +31,58 @@ class TypeScriptEntityGenerator:
             self.write_to_typescript_file(table_name, typescript_entity)
 
         self.conn.close()
+        
+
+    def fetch_foreign_keys(self, table_name):
+        query = f"""
+            SELECT DISTINCT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+            WHERE TABLE_NAME = '{table_name}' AND TABLE_SCHEMA = '{self.database}' AND REFERENCED_TABLE_NAME IS NOT NULL;
+        """
+        self.cursor.execute(query)
+        return self.cursor.fetchall()
 
     def generate_typescript_entity(self, table_name):
         self.cursor.execute(f"SHOW COLUMNS FROM {table_name}")
         columns = self.cursor.fetchall()
-        classNmae = self.convertToLowerCamelCase(table_name)
-        classNmae = classNmae[0].upper() + classNmae[1:]
+        foreign_keys = self.fetch_foreign_keys(table_name)
+        
+        className = self.convertToLowerCamelCase(table_name)
+        className = className[0].upper() + className[1:]
+        typescript_entity = ';\n'.join(
+                f'import {{ {self.convertToUpperCamelCase(fk["REFERENCED_TABLE_NAME"])} }} from \"./{self.convertToUpperCamelCase(fk["REFERENCED_TABLE_NAME"])}\"'
+                for fk in foreign_keys)
+        typescript_entity += ';\n'
 
-        typescript_entity = f"export class {classNmae} {{\n"
+        
+        typescript_entity += f"export class {className} {{\n"
         for column in columns:
             column_name = column["Field"]
             column_type = column["Type"]
             typescript_type = self.map_mysql_to_typescript(column_type)
             typescript_entity += f"  {self.convertToLowerCamelCase(column_name)}: {typescript_type};\n"
-        typescript_entity += "}\n"
 
+        # getRelation method
+        if foreign_keys:
+            relation_body = ', '.join(
+                f'"{self.convertToLowerCamelCase(fk["COLUMN_NAME"])}": {self.convertToUpperCamelCase(fk["REFERENCED_TABLE_NAME"])}'
+                for fk in foreign_keys
+            )
+            typescript_entity += f"  static getRelation() {{\n    return {{{relation_body}}};\n  }}\n"
+
+        typescript_entity += "}\n"
         return typescript_entity
     
     def convertToLowerCamelCase(self, text):
         parts = text.split("_")
         camelCaseText = parts[0].lower()
+        for part in parts[1:]:
+            camelCaseText += part.capitalize()
+        return camelCaseText
+    
+    def convertToUpperCamelCase(self, text):
+        parts = text.split("_")
+        camelCaseText = parts[0][0].upper() + parts[0][1:]
         for part in parts[1:]:
             camelCaseText += part.capitalize()
         return camelCaseText
@@ -74,8 +106,7 @@ class TypeScriptEntityGenerator:
         return "any"
 
     def write_to_typescript_file(self, table_name, typescript_entity):
-        classNmae = self.convertToLowerCamelCase(table_name)
-        classNmae = classNmae[0].upper() + classNmae[1:]
+        classNmae = self.convertToUpperCamelCase(table_name)
         file_name = f"{classNmae}.ts"
         file_path = os.path.join(self.output_dir, file_name)
 
@@ -86,6 +117,15 @@ class TypeScriptEntityGenerator:
             print(f"TypeScript entity for '{table_name}' written to '{file_path}'")
         except (OSError, IOError) as error:
             print(f"Error writing TypeScript entity for '{table_name}': {error}")
+    
+    def write_index_fille(self):
+        index_file_path = os.path.join(self.output_dir, "index.ts")
+        try:
+            with open(index_file_path, "w") as file:
+                file.write("export * from './types';\n")
+            print(f"Index file written to '{index_file_path}'")
+        except (OSError, IOError) as error:
+            print(f"Error writing index file: {error}")
 
 if __name__ == "__main__":
     # Database connection details
